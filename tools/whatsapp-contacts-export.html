@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp Contacts Export</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root { --bg:#f4f6f5; --card:#fff; --text:#1d2320; --muted:#5f6b66; --line:#dde3e0; --accent:#128c4a; --accent-text:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111614; --card:#1a201d; --text:#e6ece9; --muted:#9aa8a1; --line:#2c3531; --accent:#25d366; --accent-text:#08140d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:1rem; margin:0 0 6px; }
+  .card p { margin:0 0 10px; color:var(--muted); font-size:.92rem; }
+  .drop { border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; cursor:pointer; color:var(--muted); }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  textarea { width:100%; min-height:90px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; resize:vertical; }
+  button { background:var(--accent); color:var(--accent-text); border:0; border-radius:8px; padding:9px 16px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .stats { color:var(--muted); font-size:.9rem; }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  input.grp { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:inherit; min-width:0; flex:1; }
+  details { color:var(--muted); font-size:.9rem; }
+  details li { margin-bottom:4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WhatsApp Contacts Export</h1>
+  <p class="sub">Pull names and phone numbers out of a WhatsApp group and save them to Excel. Everything runs in your browser. Nothing is uploaded.</p>
+
+  <div class="card">
+    <h2>Option 1. Load an exported chat</h2>
+    <p>In WhatsApp open the group, tap the group name, then Export chat, Without media. Drop the .txt or .zip file here. This captures everyone who has posted, joined, been added or left in the chat history.</p>
+    <div class="drop" id="drop">Drop the chat .txt or .zip here, or click to choose<input type="file" id="file" accept=".txt,.zip" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>Option 2. Paste the member list</h2>
+    <p>On WhatsApp Web or Desktop, the line under the group name at the top of the chat lists every member separated by commas. Hover it, select the text, copy, and paste it here. This gets the full current membership, including people who never posted.</p>
+    <textarea id="paste" placeholder="Alice Smith, Bob Jones, +1 555 123 4567, +44 7700 900123, You"></textarea>
+    <div class="row"><button id="addPaste">Add these members</button></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <input class="grp" id="groupName" placeholder="Group name (used for the file name)">
+      <button id="xlsx" disabled>Download Excel</button>
+      <button class="ghost" id="csv" disabled>Download CSV</button>
+      <button class="ghost" id="clear">Clear</button>
+    </div>
+    <p class="stats" id="stats" style="margin-top:10px">No contacts loaded yet.</p>
+    <div class="tablewrap"><table id="table" hidden>
+      <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Messages</th><th>First seen</th><th>Last seen</th><th>Source</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+
+  <details class="card">
+    <summary>Why do some rows have a name but no number?</summary>
+    <ul>
+      <li>WhatsApp shows your saved contact name instead of the number for people in your phone book, and the export does the same. For those, the number is not in the file.</li>
+      <li>People not in your phone book appear as a number, sometimes with a "~ Name" profile name. Those come through with both.</li>
+      <li>To get numbers for saved contacts, export your phone contacts (Google Contacts or iCloud as CSV) and match on name in Excel with XLOOKUP.</li>
+    </ul>
+  </details>
+</main>
+
+<script>
+const contacts = new Map(); // key -> record
+
+const PHONE_RE = /^\+?[\d\s\-(). ]{7,}$/;
+const PHONE_IN_TEXT = /\+?\d[\d\s\-(). ]{6,}\d/g;
+// Matches Android "12/31/23, 9:15 PM - " and iOS "[12/31/23, 9:15:02 PM] " and 24h / dotted variants
+const LINE_RE = /^‎?\[?(\d{1,4}[./-]\d{1,2}[./-]\d{1,4}),?\s+(\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s?[AaPp]\.?\s?[Mm]\.?)?)\]?\s*(?:-\s)?(.*)$/;
+
+const clean = s => s.replace(/[‎‏‪-‮⁦-⁩ ]/g, ' ').replace(/\s+/g, ' ').trim();
+const isPhone = s => PHONE_RE.test(s) && s.replace(/\D/g, '').length >= 7;
+const normPhone = s => { const d = s.replace(/\D/g, ''); return (s.trim().startsWith('+') ? '+' : '') + d; };
+
+function upsert(raw, { when, message = false, source }) {
+  let label = clean(raw).replace(/^~\s*/, '');
+  if (!label || /^you$/i.test(label)) return;
+  let name = '', phone = '';
+  if (isPhone(label)) phone = normPhone(label); else name = label;
+  const key = phone || name.toLowerCase();
+  let r = contacts.get(key);
+  if (!r) { r = { name, phone, messages: 0, first: '', last: '', sources: new Set() }; contacts.set(key, r); }
+  if (!r.name && name) r.name = name;
+  if (message) r.messages++;
+  if (when) { if (!r.first) r.first = when; r.last = when; }
+  r.sources.add(source);
+}
+
+function parseChat(text) {
+  const lines = text.split(/\r?\n/);
+  let matched = 0;
+  for (const line of lines) {
+    const m = clean(line).match(LINE_RE) || line.match(LINE_RE);
+    if (!m) continue;
+    matched++;
+    const when = m[1] + ' ' + m[2];
+    const rest = clean(m[3]);
+    const colon = rest.indexOf(': ');
+    const sender = colon > 0 ? rest.slice(0, colon) : '';
+    if (sender && sender.length < 60 && !/ (added|removed|changed|created) /.test(sender)) {
+      upsert(sender, { when, message: true, source: 'chat' });
+      continue;
+    }
+    // System lines: joined, left, added, removed. Grab actor and any numbers mentioned.
+    let sm;
+    if ((sm = rest.match(/^(.+?) (joined using|joined from|left$|left the group|was added|was removed)/i))) upsert(sm[1], { when, source: 'system' });
+    if ((sm = rest.match(/^(.+?) (?:added|removed) (.+)$/i))) {
+      upsert(sm[1], { when, source: 'system' });
+      sm[2].split(/,| and /).forEach(p => upsert(p, { when, source: 'system' }));
+    } else {
+      (rest.match(PHONE_IN_TEXT) || []).forEach(p => upsert(p, { when, source: 'system' }));
+    }
+  }
+  return matched;
+}
+
+async function handleFile(file) {
+  let text = '';
+  if (/\.zip$/i.test(file.name)) {
+    const zip = await JSZip.loadAsync(file);
+    const txt = Object.values(zip.files).find(f => /\.txt$/i.test(f.name) && !f.dir);
+    if (!txt) return alert('No .txt chat file found inside that zip.');
+    text = await txt.async('string');
+  } else text = await file.text();
+  const g = file.name.replace(/\.(txt|zip)$/i, '').replace(/^WhatsApp Chat (with |- )?/i, '');
+  if (!$('groupName').value) $('groupName').value = g;
+  const n = parseChat(text);
+  if (!n) alert('That file did not look like a WhatsApp chat export. No dated message lines were found.');
+  render();
+}
+
+function addPaste() {
+  const t = $('paste').value;
+  t.split(/[,\n;]/).forEach(p => upsert(p, { source: 'member list' }));
+  $('paste').value = '';
+  render();
+}
+
+function rows() {
+  return [...contacts.values()]
+    .sort((a, b) => (a.name || '~' + a.phone).localeCompare(b.name || '~' + b.phone))
+    .map(r => ({ Name: r.name, Phone: r.phone, Messages: r.messages, 'First seen': r.first, 'Last seen': r.last, Source: [...r.sources].join(', ') }));
+}
+
+function render() {
+  const data = rows();
+  const tbody = document.querySelector('#table tbody');
+  tbody.innerHTML = '';
+  data.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    [i + 1, r.Name, r.Phone, r.Messages, r['First seen'], r['Last seen'], r.Source].forEach(v => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  });
+  const withPhone = data.filter(r => r.Phone).length;
+  $('table').hidden = !data.length;
+  $('xlsx').disabled = $('csv').disabled = !data.length;
+  $('stats').textContent = data.length ? `${data.length} contacts. ${withPhone} with a phone number, ${data.length - withPhone} name only.` : 'No contacts loaded yet.';
+}
+
+function fileBase() { return (clean($('groupName').value) || 'whatsapp-group').replace(/[\\/:*?"<>|]/g, '') + ' contacts'; }
+
+function downloadXlsx() {
+  const ws = XLSX.utils.json_to_sheet(rows());
+  ws['!cols'] = [{ wch: 28 }, { wch: 18 }, { wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 18 }];
+  // Keep phone numbers as text so Excel does not drop the + or use scientific notation
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let R = 1; R <= range.e.r; R++) { const c = ws[XLSX.utils.encode_cell({ r: R, c: 1 })]; if (c) { c.t = 's'; c.z = '@'; } }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Contacts');
+  XLSX.writeFile(wb, fileBase() + '.xlsx');
+}
+
+function downloadCsv() {
+  const data = rows();
+  const head = Object.keys(data[0]);
+  const esc = v => '"' + String(v).replace(/"/g, '""') + '"';
+  const csv = '﻿' + [head.map(esc).join(','), ...data.map(r => head.map(h => esc(r[h])).join(','))].join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = fileBase() + '.csv';
+  a.click();
+}
+
+const $ = id => document.getElementById(id);
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+$('file').onchange = e => e.target.files[0] && handleFile(e.target.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && handleFile(e.dataTransfer.files[0]); };
+$('addPaste').onclick = addPaste;
+$('xlsx').onclick = downloadXlsx;
+$('csv').onclick = downloadCsv;
+$('clear').onclick = () => { contacts.clear(); render(); };
+</script>
+</body>
+</html>
