@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "WhatsApp Group Contacts Export",
+  "version": "1.0.0",
+  "description": "Adds a button to WhatsApp Web that downloads the members of the open group as a CSV file.",
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["export.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
